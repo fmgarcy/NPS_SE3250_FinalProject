@@ -1,0 +1,617 @@
+#HETEROGENEOUS
+
+import numpy as np
+import matplotlib.pyplot as plt
+import re
+import random
+import se3250lib
+from se3250lib.cost_eq import calculate_ship_cost, calculate_weap_cost
+from se3250lib.ship import ship_inv
+from se3250lib.wpninv import wpn_inv
+from tabulate import tabulate
+from scipy.stats import norm
+import statsmodels.api as sm
+
+
+# @title Heterogeneous Fleet Configurations
+LCS_Quantity = "1" # @param ["0", "1", "2", "3"]
+DDG_Quantity = "1" # @param ["0", "1", "2", "3"]
+CG_Quantity = "1" # @param ["0", "1", "2", "3"]
+BluTest_Quantity = "0" # @param ["0", "1", "2", "3"]
+Friendly_Defensive_Weapon_Type = 'RIM' # @param ["RIM", "XX"] {allow-input: true}
+Friendly_Offensive_Weapon_Type = 'AGM' # @param ["AGM", "BGM", "RGM", "XX"] {allow-input: true}
+
+Destroyer_Quantity = "1" # @param ["0", "1", "2", "3"]
+Frigate_Quantity = "1" # @param ["0", "1", "2", "3"]
+Corvette_Quantity = "1" # @param ["0", "1", "2", "3"]
+RedTest_Quantity = "0" # @param ["0", "1", "2", "3"]
+Hostile_Offensive_Weapon_Type = 'YJ' # @param ["YJ", "XX"] {allow-input: true}
+Hostile_Defensive_Weapon_Type = 'HQ' # @param ["FL", "HQ", "XX"] {allow-input: true}
+
+#Conversions
+LCS_Quantity = int(LCS_Quantity)
+DDG_Quantity = int(DDG_Quantity)
+CG_Quantity = int(CG_Quantity)
+BluTest_Quantity = int(BluTest_Quantity)
+RedTest_Quantity = int(RedTest_Quantity)
+Destroyer_Quantity = int(Destroyer_Quantity)
+Frigate_Quantity = int(Frigate_Quantity)
+Corvette_Quantity = int(Corvette_Quantity)
+
+class Ship:
+    ''' A ship carrying anti-ship cruise missiles.
+
+    Attributes:
+        * type (str): the type of ship, for labeling purposes only.
+        * op (int): the number of anti-ship cruise missiles the ship can fire in one salvo.
+        * dp (int): the number of SAM the ship can fire in one salvo against incoming missiles.
+        * sp (float): initial staying power in missile hits.
+        * hp (float): hit points remaining.
+        * status (fraction): fraction of its staying power remaining. 1 is intact, 0 is OOA.
+        * age (int): the age of the ship in years.
+        * training (float): the crew training level, a value between 0 and 1. ex; 0 - no training, 1 - max level of training
+    '''
+
+    def __init__(self, type, classtype, op, dp, sp, age=1, training=0.0):
+        self.type = type
+        self.classtype = classtype
+        self.op = op
+        self.dp = dp
+        self.sp = sp
+        self.hp = sp
+        self.status = 1
+        self.age = age
+        self.training = training
+
+    def damage(self, damage):
+        ''' Lowers the ship's 'hp' attribute by the input amount.
+
+        Args:
+            * damage (float): points of damage to subtract. HP cannot go below 0.
+        '''
+        damage = min(damage, self.hp)
+        damage = max(damage, 0)
+        self.hp -= damage
+        self.status = self.hp / self.sp
+
+    def ascm_fire(self):
+        ''' Returns cruise missile salvo size based on status.'''
+        return self.op * self.status
+
+    def sam_fire(self):
+        ''' Returns SAM salvo size based on status.'''
+        return self.dp * self.status
+
+    def __str__(self):
+        ''' String override. Returns ship type, status as percentage, OP, DP, age, and training.'''
+        shipStatus = round(self.status * 100, 2)
+        shipOp = round(self.ascm_fire(), 2)
+        shipDp = round(self.sam_fire(), 2)
+        shipString = "{} ({}%) OP: {} DP: {} Age: {} Training: {}\n".format(self.type, shipStatus, shipOp, shipDp, self.age, self.training)
+        return shipString
+
+class Missiles:
+    ''' The specification of the missile systems carried by a group of ships.
+
+    Attributes:
+        * launch_reliability (fraction): fraction of cruise missiles that launch successfully.
+        * ascm_to_hit (fraction): fraction of cruise missiles that hit, in the absence of defences.
+        * sam_to_hit (fraction): fraction of SAM that successfully intercept incoming missiles.
+    '''
+    def __init__(self, type, classtype, launch_reliability=1, ascm_to_hit=1, sam_to_hit=1):
+        self.type = type
+        self.classtype = classtype
+        self.launch_reliability = launch_reliability
+        self.ascm_to_hit = ascm_to_hit
+        self.sam_to_hit = sam_to_hit
+
+    def offensive_modifier(self):
+        ''' Returns the fraction of missiles that launch AND hit.'''
+        return self.launch_reliability * self.ascm_to_hit
+
+class Group:
+    ''' A group of ships.
+
+    Attributes:
+        * side (str): the group's side identifier, for labelling purposes.
+        * ship (Ship): the ship type the group is composed of.
+        * units (int): the number of ships of type (ship) in the group.
+            * oob (list): a list of Ship objects representing the group.
+        * scouting (fraction): fraction of enemy group that can be located and targeted.
+        * readiness (fraction): efficiency of the group's defences.
+        * missiles (Missiles): the missile systems used by the group.
+    '''
+    def __init__(self, side, ship, classtype, units, scouting=1, readiness=1, offensive_missiles=None, defensive_missiles=None):
+        self.side = side
+        self.oob = [Ship(ship.type, ship.classtype, ship.op, ship.dp, ship.sp, ship.age, ship.training) for i in range(units)]
+        self.classtype = classtype
+        self.scouting = scouting
+        self.readiness = readiness
+        self.offensive_missiles = offensive_missiles or Missiles(classtype)
+        self.defensive_missiles = defensive_missiles or Missiles(classtype)
+
+    def striking_power(self):
+        salvoSize = sum(ship.ascm_fire() for ship in self.oob)
+        strikingPower = salvoSize * self.scouting * self.offensive_missiles.offensive_modifier()
+        return strikingPower
+
+    def defensive_power(self):
+        defensiveSalvoSize = sum(ship.sam_fire() for ship in self.oob)
+        defensivePower = defensiveSalvoSize * self.readiness * self.defensive_missiles.sam_to_hit
+        return defensivePower
+
+    def combat_power(self, enemy):
+        combat_power = self.striking_power() - enemy.defensive_power()
+        return combat_power
+
+    def total_status(self):
+        ''' Returns the sum of the 'status' attributes of all ships in the group.'''
+        return sum(i.status for i in self.oob)
+
+    def damage(self, damage):
+        ''' Damages the group. Applied to all ships consecutively until damage reaches
+        zero, or no more targets are available.
+
+        Arguments:
+            * damage (float): the total amount damage to inflict upon the group.
+        '''
+        while damage > 0 and self.total_status() > 0:
+            for i in self.oob:
+                if i.status > 0:
+                    if damage > i.hp:
+                        damage -= i.hp
+                        i.damage(i.hp)
+                    else:
+                        i.damage(damage)
+                        damage = 0
+
+    def __str__(self):
+        ''' String override. Returns the percentage of the original staying power remaining,
+        and the (equivalent) number of active ships.
+        '''
+        percentage = round((self.total_status() / len(self.oob)) * 100, 2)
+        activeShips = round(self.total_status(), 2)
+        groupString = "{}: {}% ({} active ships)".format(self.side, percentage, activeShips)
+        return groupString
+
+    def calculate_average_readiness(self):
+        readiness_values = []
+        for ship in self.oob:
+            readiness = calculate_ship_readiness(ship)
+            readiness_values.append(round(readiness, 2))  # Round readiness to 2 decimal places
+        average_readiness = sum(readiness_values) / len(readiness_values)
+        return average_readiness
+
+class Battle:
+    ''' A battle between two groups.
+
+    Attributes:
+        * blu (Group): the BLUFOR group.
+        * red (Group): the REDFOR group.
+        * duration (int): the duration of the battle in pulses. If zero (default) the
+        battle goes on until one side is wiped out.
+    '''
+    def __init__(self, blu, red, duration = 0):
+        self.blu = blu
+        self.red = red
+        self.duration = duration
+        self.pulse = 0
+        # Lists for plotting
+        self.bluPlot = [self.blu.total_status()]
+        self.redPlot = [self.red.total_status()]
+        self.time = [0]
+
+    def add_to_plot(self):
+        self.bluPlot.append(self.blu.total_status())
+        self.redPlot.append(self.red.total_status())
+        self.time.append(self.pulse)
+
+    def stalemate(self):
+        ''' Checks whether the battle has reached a stalemate. '''
+        stalemate_threshold = 0.1  # Adjust this value as needed
+        stalemate = (self.blu.combat_power(self.red) <= stalemate_threshold and
+                    self.red.combat_power(self.blu) <= stalemate_threshold)
+        return stalemate
+
+    def blu_surprise(self):
+        ''' Fires one BLUFOR salvo at REDFOR, without retaliation.'''
+        if self.pulse == 0:
+            # print("\nBattle starts between {} and {}\n".format(self.blu.side, self.red.side))
+            display("sim_output", "\nBattle starts between {} and {}\n".format(self.blu.side, self.red.side))
+            print(self)
+        self.pulse += 1
+        self.red.damage(self.blu.combat_power(self.red))
+        print(self)
+        # Add new values to the plotting lists
+        self.add_to_plot()
+
+    def red_surprise(self):
+        ''' Fires one REDFOR salvo at BLUFOR, without retaliation.'''
+        if self.pulse == 0:
+            print("\nBattle starts between {} and {}\n".format(self.blu.side, self.red.side))
+            print(self)
+        self.pulse += 1
+        self.blu.damage(self.red.combat_power(self.blu))
+        print(self)
+        # Add new values to the plotting lists
+        self.add_to_plot()
+
+    def salvo(self):
+        ''' Both sides fire at each other simultaneously.'''
+        if self.pulse == 0:
+            print("\nBattle starts between {} and {}\n".format(self.blu.side, self.red.side))
+            print(self)
+        bluDamageSustained = self.red.combat_power(self.blu)
+        redDamageSustained = self.blu.combat_power(self.red)
+        self.blu.damage(bluDamageSustained)
+        self.red.damage(redDamageSustained)
+        self.pulse += 1
+        print(self)
+        self.add_to_plot()
+
+    def resolve(self):
+        ''' The battle is resolved for the specified duration, or until one side is wiped out.'''
+        if self.duration == 0:
+            while self.blu.total_status() != 0 and self.red.total_status() != 0:
+                self.salvo()
+                # Add new values to the plotting lists
+                self.add_to_plot()
+                if self.stalemate():
+                    print("\nStalemate! Neither fleet can penetrate enemy missile defence.")
+                    #display("sim_output", "\nStalemate! Neither fleet can penetrate enemy missile defence.")
+                    break
+        else:
+            for _ in range(self.duration):
+                self.salvo()
+                # Add new values to the plotting lists
+                self.add_to_plot()
+
+    def plot(self):
+        x = np.array(self.time)
+        y = np.array(self.bluPlot)
+        z = np.array(self.redPlot)
+
+        width = 0.2
+
+        fig, ax = plt.subplots()
+        rects1 = ax.bar(x-0.1, y, width, color='tab:blue', zorder=3)
+        rects2 = ax.bar(x+0.1, z, width, color='tab:red', zorder=3)
+
+        ax.set_ylabel('Aggregated status')
+        ax.set_xlabel('Pulse')
+
+        ax.set_xticks(x)
+        #ax.set_yticks(np.arange(0,max(max(y),max(z))+1,1))
+
+        ax.legend((rects1[0],rects2[0]),(self.blu.side,self.red.side), loc=9)
+
+        ax.grid(which='major', axis='y', linestyle=':', alpha=0.5, zorder=0)
+        ax.grid(which='minor', axis='y', linestyle=':', alpha=0.25, zorder=0)
+
+        def autolabel(rects):
+            for rect in rects:
+                height = rect.get_height()
+                ax.text(rect.get_x() + rect.get_width()/2., height,
+                        '{}'.format(round(height,2)),
+                        ha='center', va='bottom')
+
+        autolabel(rects1)
+        autolabel(rects2)
+
+        plt.show()
+
+
+    def __str__(self):
+        ''' String override. Returns the pulse number, and the status of the opposing groups.'''
+        battleString = "\nPulse {}:\n{} | {}".format(self.pulse, str(self.blu), str(self.red))
+        return(battleString)
+
+def calculate_ship_readiness(ship):
+    ship_age = ship.age
+    crew_training = ship.training
+    # TODO_FJ look into why the following print only prints for the first ship class?
+   # print(f"Ship: {ship.type}, Age: {ship_age}, Training: {crew_training}")
+    # Assuming higher age and lower crew training reduce readiness
+    age_factor = max(0, 1 - ship_age / 40)  # Readiness decreases linearly with age up to 40 years
+    training_factor = crew_training
+
+    readiness = age_factor * training_factor
+
+    return readiness
+
+def get_rand_ship(ship_class):
+    matching_ships = [ship for ship, data in ship_inv.items() if data["classtype"] == ship_class]
+    if matching_ships:
+        return random.choice(matching_ships)
+    else:
+        return None
+
+def get_rand_weapon(weapon_class):
+    matching_weapons = [weapon for weapon, data in wpn_inv.items() if data["classtype"] == weapon_class]
+    if matching_weapons:
+        return random.choice(matching_weapons)
+    else:
+        return None
+
+# Generate Friendly Fleet (this gets called once per run)
+def generate_blufor(lcs_qty, ddg_qty, cg_qty, bluetest_qty, offensive_wpn, defensive_wpn):
+    blufor = []
+    offensive_missile_types = []
+    defensive_missile_types = []
+
+    # Combine all ships into a single group
+    ship_groups = []
+
+    # LCS
+    lcs_classes = [ship_class for ship_class, data in ship_inv.items() if data["classtype"] == 'LCS']
+    if lcs_qty > 0:
+        if lcs_qty <= len(lcs_classes): #if our lcs quantity is <= to available LCS classes in the library select lcs quantity random classes from lcs_classes
+            ship_groups.extend(random.sample(lcs_classes, lcs_qty))
+        else: #else when lcs quantity is greater than the number of available LCS classes we need to add the unique LCS classes to ship_groups and calculate the remaining quantity needed to reach users desired quantity
+            ship_groups.extend(lcs_classes)
+            remaining_qty = lcs_qty - len(lcs_classes)
+            ship_groups.extend(random.choices(lcs_classes, k=remaining_qty)) #randomly select the remaining quantity of ship classes from lcs_classes allowing for dupes and then extend ship_groups with those selections
+
+    # DDG
+    ddg_classes = [ship_class for ship_class, data in ship_inv.items() if data["classtype"] == 'DDG']
+    if ddg_qty > 0:
+        if ddg_qty <= len(ddg_classes):
+            ship_groups.extend(random.sample(ddg_classes, ddg_qty))
+        else:
+            ship_groups.extend(ddg_classes)
+            remaining_qty = ddg_qty - len(ddg_classes)
+            ship_groups.extend(random.choices(ddg_classes, k=remaining_qty))
+
+    # CG
+    cg_classes = [ship_class for ship_class, data in ship_inv.items() if data["classtype"] == 'CG']
+    if cg_qty > 0:
+        if cg_qty <= len(cg_classes):
+            ship_groups.extend(random.sample(cg_classes, cg_qty))
+        else:
+            ship_groups.extend(cg_classes)
+            remaining_qty = cg_qty - len(cg_classes)
+            ship_groups.extend(random.choices(cg_classes, k=remaining_qty))
+
+    # TEST FRIGATE
+    test_classes = [ship_class for ship_class, data in ship_inv.items() if data["classtype"] == 'XX']
+    if bluetest_qty > 0:
+        ship_groups.extend(['Test-1', 'Test-1'])
+
+    def select_ships(ship_classes, qty):
+        if qty <= len(ship_classes):
+            return random.sample(ship_classes, qty)
+        else:
+            return ship_classes + random.choices(ship_classes, k=qty - len(ship_classes))
+
+    ships = []
+    for ship_class in ship_groups:
+        ship_data = ship_inv[ship_class]
+        ships.append(Ship(ship_data['type'], ship_data['classtype'], ship_data['op'], ship_data['dp'], ship_data['sp'], ship_data.get('age', 1), ship_data.get('training', 0.0)))
+
+    offensive_wpn_type = get_rand_weapon(offensive_wpn)
+    defensive_wpn_type = get_rand_weapon(defensive_wpn)
+    offensive_wpn_data = {k: v for k, v in wpn_inv.get(offensive_wpn_type, {}).items() if k != 'type'}
+    defensive_wpn_data = {k: v for k, v in wpn_inv.get(defensive_wpn_type, {}).items() if k != 'type'}
+    offensive_wpn = Missiles(offensive_wpn_type, **offensive_wpn_data)
+    defensive_wpn = Missiles(defensive_wpn_type, **defensive_wpn_data)
+
+    blufor_group = Group("USN", ships[0], ships[0].classtype, len(ships), offensive_missiles=offensive_wpn, defensive_missiles=defensive_wpn)
+    blufor_group.readiness = blufor_group.calculate_average_readiness()
+    blufor.append(blufor_group)
+    offensive_missile_types.extend([offensive_wpn_type] * len(ships))
+    defensive_missile_types.extend([defensive_wpn_type] * len(ships))
+
+    #TODO_FJ - PRINT IS FOR DEBUG PURPOSES ONLY
+    print("BLUFOR FLEET: \n")
+    for ship in ships:
+      print(ship)
+    print("Survivability: (Average)\n", blufor_group.readiness)
+    print("\nWeapon Inventory: (All ships)")
+    print("\n Offense ", offensive_missile_types[0], "\n Defense: ", defensive_missile_types[0])
+    print("\n")
+    return blufor, offensive_missile_types, defensive_missile_types
+
+# Generate Hostile Fleet (this gets called once per run)
+def generate_redfor(dest_qty, frig_qty, corv_qty, redtest_qty, hostile_offensive_wpn, hostile_defensive_wpn):
+    redfor = []
+    hostile_offensive_missile_types = []
+    hostile_defensive_missile_types = []
+
+    # Combine all ships into a single group
+    hostile_ship_groups = []
+
+    # Destroyer
+    dest_classes = [hostile_ship_class for hostile_ship_class, data in ship_inv.items() if data["classtype"] == 'Destroyer']
+    if dest_qty > 0:
+        if dest_qty <= len(dest_classes):
+            hostile_ship_groups.extend(random.sample(dest_classes, dest_qty))
+        else:
+            hostile_ship_groups.extend(dest_classes)
+            remaining_qty = dest_qty - len(dest_classes)
+            hostile_ship_groups.extend(random.choices(dest_classes, k=remaining_qty))
+
+    # Frigate
+    frig_classes = [hostile_ship_class for hostile_ship_class, data in ship_inv.items() if data["classtype"] == 'Frigate']
+    if frig_qty > 0:
+        if frig_qty <= len(frig_classes):
+            hostile_ship_groups.extend(random.sample(frig_classes, frig_qty))
+        else:
+            hostile_ship_groups.extend(frig_classes)
+            remaining_qty = frig_qty - len(frig_classes)
+            hostile_ship_groups.extend(random.choices(frig_classes, k=remaining_qty))
+
+    # Corvette
+    corv_classes = [hostile_ship_class for hostile_ship_class, data in ship_inv.items() if data["classtype"] == 'Corvette']
+    if corv_qty > 0:
+        if corv_qty <= len(corv_classes):
+            hostile_ship_groups.extend(random.sample(corv_classes, corv_qty))
+        else:
+            hostile_ship_groups.extend(corv_classes)
+            remaining_qty = corv_qty - len(corv_classes)
+            hostile_ship_groups.extend(random.choices(corv_classes, k=remaining_qty))
+
+    # TEST FRIGATE
+    redtest_classes = [hostile_ship_class for hostile_ship_class, data in ship_inv.items() if data["classtype"] == 'XX']
+    if redtest_qty > 0:
+        hostile_ship_groups.extend(['Test-1', 'Test-1', 'Test-1'])
+
+
+    hostile_ships = []
+    for hostile_ship_class in hostile_ship_groups:
+        hostile_ship_data = ship_inv[hostile_ship_class]
+        hostile_ships.append(Ship(hostile_ship_data['type'], hostile_ship_data['classtype'], hostile_ship_data['op'], hostile_ship_data['dp'], hostile_ship_data['sp'], hostile_ship_data.get('age', 1),  hostile_ship_data.get('training', 0.0)))
+
+
+    hostile_offensive_wpn_type = get_rand_weapon(hostile_offensive_wpn)
+    hostile_defensive_wpn_type = get_rand_weapon(hostile_defensive_wpn)
+    hostile_offensive_wpn_data = {k: v for k, v in wpn_inv.get(hostile_offensive_wpn_type, {}).items() if k != 'type'}
+    hostile_defensive_wpn_data = {k: v for k, v in wpn_inv.get(hostile_defensive_wpn_type, {}).items() if k != 'type'}
+    hostile_offensive_wpn = Missiles(hostile_offensive_wpn_type, **hostile_offensive_wpn_data)
+    hostile_defensive_wpn = Missiles(hostile_defensive_wpn_type, **hostile_defensive_wpn_data)
+
+    redfor_group = Group("PLAN", hostile_ships[0], hostile_ships[0].classtype, len(hostile_ships), offensive_missiles=hostile_offensive_wpn, defensive_missiles=hostile_defensive_wpn)
+    redfor_group.readiness = redfor_group.calculate_average_readiness()
+    redfor.append(redfor_group)
+    hostile_offensive_missile_types.extend([hostile_offensive_wpn_type] * len(hostile_ships))
+    hostile_defensive_missile_types.extend([hostile_defensive_wpn_type] * len(hostile_ships))
+
+    #TODO_FJ - PRINT IS FOR DEBUG PURPOSES ONLY
+    print("REDFOR FLEET: \n")
+    for hostile_ship in hostile_ships:
+      print(hostile_ship)
+    print("Survivability: (Average)\n", redfor_group.readiness)
+    print("\nWeapon Inventory: (All ships)")
+    print("\n Offense: " , hostile_offensive_missile_types[0], "\n Defense: ", hostile_defensive_missile_types[0])
+    print("\n")
+    return redfor, hostile_offensive_missile_types, hostile_defensive_missile_types
+
+#  Monte Carlo Simulation
+num_simulations = 8  # Specify the desired number of simulations
+
+# Lists to store simulation results
+total_cost = []
+total_attrition = []
+squadron_outcome_probs = []
+weapon_outcome_probs = []
+attrition_cost_ratio = []
+friendly_wins = 0
+blu_win_costs = []
+
+for run in range(num_simulations):
+    # Generate random friendly fleet configuration
+    blufor, offensive_missile_types, defensive_missile_types = generate_blufor(LCS_Quantity, DDG_Quantity, CG_Quantity, BluTest_Quantity, Friendly_Offensive_Weapon_Type, Friendly_Defensive_Weapon_Type)
+
+    # Generate random hostile fleet configuration
+    redfor, hostile_offensive_missile_types, hostile_defensive_missile_types = generate_redfor(Destroyer_Quantity, Frigate_Quantity, Corvette_Quantity, RedTest_Quantity, Hostile_Offensive_Weapon_Type, Hostile_Defensive_Weapon_Type)
+
+    # Create a single battle instance with the random friendly fleet and the random hostile fleet
+    if blufor and redfor:
+        battle = Battle(blufor[0], redfor[0])
+        battle.blu_surprise()
+
+        # Resolve and plot the battle
+        battle.resolve()
+        battle.plot()
+
+        if battle.blu.total_status() > 0 and battle.red.total_status() == 0:
+            friendly_wins += 1
+
+    # Calculate BLUFOR costs
+    run_ship_cost = 0
+    run_weap_cost = 0
+
+
+    for blufor_group in blufor:
+        num_friendly_ships_lost = sum(1 for ship in blufor_group.oob if ship.status == 0)
+        num_friendly_ships_damaged = sum(1 for ship in blufor_group.oob if (0 < ship.status < 1))
+        ship_type = blufor_group.oob[0].type  # Get the friendly ship type
+        ship_cost = calculate_ship_cost(ship_type, num_friendly_ships_lost, num_friendly_ships_damaged)
+        wpn_offensive = offensive_missile_types[0]  # Use the offensive weapon type
+        weap_cost = calculate_weap_cost(wpn_offensive, len(blufor_group.oob))
+        run_ship_cost += ship_cost
+        run_weap_cost += weap_cost
+        total_current =run_ship_cost+run_weap_cost
+
+        if battle.blu.total_status() > 0 and battle.red.total_status() == 0:
+          blu_win_costs.append(total_current)
+          print("\nBLU WIN: ", blu_win_cost)
+
+        print("\n Run #", run+1, ": \n", "Ship Cost: ",run_ship_cost, "\n Weap Cost: ", run_weap_cost, "\n Run Cost: ", run_ship_cost+run_weap_cost)
+
+    run_cost = run_ship_cost + run_weap_cost
+    total_cost.append(run_cost)
+    print("\n Total Cost: ", total_cost, "\n")
+
+    # Calculate attrition
+    run_attrition = sum(1 for blufor_group in blufor for ship in blufor_group.oob if ship.status == 0)
+    total_attrition.append(run_attrition)
+
+    # Calculate probability of friendly positive outcome per squadron size
+    squadron_size = sum((LCS_Quantity + DDG_Quantity + CG_Quantity + BluTest_Quantity) for blufor_group in blufor)
+    squadron_outcome_probs.append((squadron_size, friendly_wins))
+
+    # Calculate probability of friendly positive outcome per weapon type
+    weapon_outcome_probs.append((Friendly_Offensive_Weapon_Type, friendly_wins))
+
+# Confidence Intervals
+H0 = "BLUFOR wins mean cost is under budget."
+HA = "BLUFOR wins mean cost indicate battle may go over budget."
+mean_blu_win_cost = np.mean(blu_win_costs)
+std_blu_win_cost = np.std(blu_win_costs)
+alpha = 0.05
+confidence_level = 0.95  # 95% confidence level
+conf_int = norm.interval(confidence_level, loc=mean_blu_win_cost, scale=std_blu_win_cost / np.sqrt(len(blu_win_costs)))
+
+print(f"Mean cost of BLUFOR wins: {mean_blu_win_cost:.2f}\n")
+print(f"{confidence_level*100}% confidence interval: {conf_int}\n")
+
+# Hypothesis testing
+null_mean_cost = 1000000  # Null hypothesis mean cost
+alternative = 'larger'  # Alternative hypothesis: mean cost > 1000000
+
+# Perform the z-test
+z_statistic, p_value = sm.stats.ztest(blu_win_costs, value=null_mean_cost, alternative=alternative)
+
+if p_value < alpha:
+    print(f"\033[91mReject null hypothesis:\n {HA}\033[0m\n (p-value = {p_value:.5f})")
+else:
+    print(f"Fail to reject null hypothesis:\n {H0} (p-value = {p_value:.5f})")
+
+
+# Cost to Attrition Ratio Display
+for i in range(len(total_attrition)):
+  if total_attrition[i] > 0:
+    attrition_cost_ratio.append(total_cost[i] / total_attrition[i])
+
+plt.figure()
+plt.hist([attrition_cost_ratio], bins=20, edgecolor='black')
+plt.title('Attrition to Cost Ratio')
+plt.xlabel('Ratio')
+plt.ylabel('Frequency')
+plt.show()
+
+# Calculate and display probabilities of friendly positive outcome per squadron size
+squadron_outcome_probs_dict = {}
+for squadron_size, outcome in squadron_outcome_probs:
+    if squadron_size in squadron_outcome_probs_dict:
+        squadron_outcome_probs_dict[squadron_size].append(outcome)
+    else:
+        squadron_outcome_probs_dict[squadron_size] = [outcome]
+
+print("Probabilities of friendly positive outcome per squadron size:")
+for squadron_size, outcomes in squadron_outcome_probs_dict.items():
+    probability = sum(outcomes) / len(outcomes)
+    print(f"Squadron size {squadron_size}: {probability:.2f}")
+
+# Calculate and display probabilities of friendly positive outcome per weapon type
+weapon_outcome_probs_dict = {}
+for weapon_type, outcome in weapon_outcome_probs:
+    if weapon_type in weapon_outcome_probs_dict:
+        weapon_outcome_probs_dict[weapon_type].append(outcome)
+    else:
+        weapon_outcome_probs_dict[weapon_type] = [outcome]
+
+print("\nProbabilities of friendly positive outcome per weapon type:")
+for weapon_type, outcomes in weapon_outcome_probs_dict.items():
+    probability = sum(outcomes) / len(outcomes)
+    print(f"Weapon type {weapon_type}: {probability:.2f}")
