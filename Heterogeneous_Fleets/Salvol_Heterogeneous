@@ -1,39 +1,42 @@
-#HOMOGENEOUS 
+#HETEROGENEOUS
 
 import numpy as np
 import matplotlib.pyplot as plt
-#from se3250lib import list_all_ships
+import re
+import random
+import se3250lib
+from se3250lib.cost_eq import calculate_ship_cost, calculate_weap_cost
+from se3250lib.ship import ship_inv
+from se3250lib.wpninv import wpn_inv
+from tabulate import tabulate
+from scipy.stats import norm
+import statsmodels.api as sm
 
-LCS = "LCS-Freedom" # @param ["None", "LCS-Freedom", "LCS-Independence"]
-LCS_Quantity = "1" # @param ["0", "1", "2", "3", "4"]
-DDG = "DDG-Arleigh-Burke" # @param ["None", "DDG-Arleigh-Burke"]
-DDG_Quantity = "1" # @param ["0", "1", "2", "3", "4"]
-CG = "CG-Ticonderoga" # @param ["None","CG-Ticonderoga"]
-CG_Quantity = "1" # @param ["0", "1", "2", "3", "4"]
-BluTest = "0" # @param ["0", "1", "2", "3", "4"]
-Friendly_Defensive_Weapon_Type = 'RIM-66M' # @param ["RIM-116", "RIM-66M", "RGM-84", "RGM-184A", "Test-1"] {allow-input: true}
-Friendly_Offensive_Weapon_Type = 'AGM-84E' # @param ["AGM-114L", "AGM-84E", "BGM-109", "Test-1"] {allow-input: true}
 
-Destroyer = "Destroyer-055D-Renhai" # @param ["None", "Destroyer-055D-Renhai", "Destroyer-052D-Luyang-III"]
-Destroyer_Quantity = "1" # @param ["0", "1", "2", "3", "4"]
-Frigate = "Frigate-054A-Jiangkai-II" # @param ["None", "Frigate-054A-Jiangkai-II", "Frigate-053H3-Jiangwei-II"]
-Frigate_Quantity = "1" # @param ["0", "1", "2", "3", "4"]
-Corvette = "Corvette-056A-Jiangdao" # @param ["None", "Corvette-056A-Jiangdao"]
-Corvette_Quantity = "1" # @param ["0", "1", "2", "3", "4"]
-RedTest = "0" # @param ["0", "1", "2", "3", "4"]
-Hostile_Offensive_Weapon_Type = 'YJ-18' # @param ["YJ-18", "YJ-12", "YJ-83", "Test-2"] {allow-input: true}
-Hostile_Defensive_Weapon_Type = 'HQ-10' # @param ["FL-300N", "HQ-10", "HQ-16", "Test-2"] {allow-input: true}
-Hostile_Scouting = 22 # @param {type:"slider", min:0, max:100, step:1}
+# @title Heterogeneous Fleet Configurations
+LCS_Quantity = "1" # @param ["0", "1", "2", "3"]
+DDG_Quantity = "1" # @param ["0", "1", "2", "3"]
+CG_Quantity = "1" # @param ["0", "1", "2", "3"]
+BluTest_Quantity = "0" # @param ["0", "1", "2", "3"]
+Friendly_Defensive_Weapon_Type = 'RIM' # @param ["RIM", "XX"] {allow-input: true}
+Friendly_Offensive_Weapon_Type = 'AGM' # @param ["AGM", "BGM", "RGM", "XX"] {allow-input: true}
+
+Destroyer_Quantity = "1" # @param ["0", "1", "2", "3"]
+Frigate_Quantity = "1" # @param ["0", "1", "2", "3"]
+Corvette_Quantity = "1" # @param ["0", "1", "2", "3"]
+RedTest_Quantity = "0" # @param ["0", "1", "2", "3"]
+Hostile_Offensive_Weapon_Type = 'YJ' # @param ["YJ", "XX"] {allow-input: true}
+Hostile_Defensive_Weapon_Type = 'HQ' # @param ["FL", "HQ", "XX"] {allow-input: true}
 
 #Conversions
 LCS_Quantity = int(LCS_Quantity)
-DDG_Quantity = int(LCS_Quantity)
-CG_Quantity = int(LCS_Quantity)
-Destroyer_Quantity = int(LCS_Quantity)
-Frigate_Quantity = int(LCS_Quantity)
-Corvette_Quantity = int(LCS_Quantity)
-BluTest = int(BluTest)
-RedTest = int(RedTest)
+DDG_Quantity = int(DDG_Quantity)
+CG_Quantity = int(CG_Quantity)
+BluTest_Quantity = int(BluTest_Quantity)
+RedTest_Quantity = int(RedTest_Quantity)
+Destroyer_Quantity = int(Destroyer_Quantity)
+Frigate_Quantity = int(Frigate_Quantity)
+Corvette_Quantity = int(Corvette_Quantity)
 
 class Ship:
     ''' A ship carrying anti-ship cruise missiles.
@@ -171,17 +174,13 @@ class Group:
         groupString = "{}: {}% ({} active ships)".format(self.side, percentage, activeShips)
         return groupString
 
-def calculate_ship_readiness(ship, scouting):
-    ship_age = ship.age
-    crew_training = ship.training
-    # Assuming higher age and lower crew training reduce readiness
-    age_factor = max(0, 1 - ship_age / 40)  # Readiness decreases linearly with age up to 40 years
-    training_factor = crew_training
-    scouting_factor = scouting  # Scouting value is already in the range [0, 1]
-
-    readiness = age_factor * training_factor * scouting_factor
-
-    return readiness
+    def calculate_average_readiness(self):
+        readiness_values = []
+        for ship in self.oob:
+            readiness = calculate_ship_readiness(ship)
+            readiness_values.append(round(readiness, 2))  # Round readiness to 2 decimal places
+        average_readiness = sum(readiness_values) / len(readiness_values)
+        return average_readiness
 
 class Battle:
     ''' A battle between two groups.
@@ -217,8 +216,8 @@ class Battle:
     def blu_surprise(self):
         ''' Fires one BLUFOR salvo at REDFOR, without retaliation.'''
         if self.pulse == 0:
-            print("\nBattle starts between {} and {}\n".format(self.blu.side, self.red.side))
-            #display("sim_output", "\nBattle starts between {} and {}\n".format(self.blu.side, self.red.side), append=True)
+            # print("\nBattle starts between {} and {}\n".format(self.blu.side, self.red.side))
+            display("sim_output", "\nBattle starts between {} and {}\n".format(self.blu.side, self.red.side))
             print(self)
         self.pulse += 1
         self.red.damage(self.blu.combat_power(self.red))
@@ -259,7 +258,7 @@ class Battle:
                 self.add_to_plot()
                 if self.stalemate():
                     print("\nStalemate! Neither fleet can penetrate enemy missile defence.")
-                    #display("sim_output", "\nStalemate! Neither fleet can penetrate enemy missile defence.", append=True)
+                    #display("sim_output", "\nStalemate! Neither fleet can penetrate enemy missile defence.")
                     break
         else:
             for _ in range(self.duration):
@@ -307,7 +306,7 @@ class Battle:
         battleString = "\nPulse {}:\n{} | {}".format(self.pulse, str(self.blu), str(self.red))
         return(battleString)
 
-def calculate_ship_readiness(ship, scouting):
+def calculate_ship_readiness(ship):
     ship_age = ship.age
     crew_training = ship.training
     # TODO_FJ look into why the following print only prints for the first ship class?
@@ -316,7 +315,7 @@ def calculate_ship_readiness(ship, scouting):
     age_factor = max(0, 1 - ship_age / 40)  # Readiness decreases linearly with age up to 40 years
     training_factor = crew_training
 
-    readiness = age_factor * training_factor * scouting
+    readiness = age_factor * training_factor
 
     return readiness
 
@@ -334,113 +333,159 @@ def get_rand_weapon(weapon_class):
     else:
         return None
 
-def generate_blufor(lcs_type, lcs_qty, ddg_type, ddg_qty, cg_type, cg_qty, bluetest_qty, offensive_wpn, defensive_wpn, scouting):
+# Generate Friendly Fleet (this gets called once per run)
+def generate_blufor(lcs_qty, ddg_qty, cg_qty, bluetest_qty, offensive_wpn, defensive_wpn):
     blufor = []
     offensive_missile_types = []
     defensive_missile_types = []
 
-    ships = []
-    ship_types = []
-    quantities = []
+    # Combine all ships into a single group
+    ship_groups = []
 
-    if lcs_type != "None":
-        ship_types.append(lcs_type)
-        quantities.append(lcs_qty)
+    # LCS
+    lcs_classes = [ship_class for ship_class, data in ship_inv.items() if data["classtype"] == 'LCS']
+    if lcs_qty > 0:
+        if lcs_qty <= len(lcs_classes): #if our lcs quantity is <= to available LCS classes in the library select lcs quantity random classes from lcs_classes
+            ship_groups.extend(random.sample(lcs_classes, lcs_qty))
+        else: #else when lcs quantity is greater than the number of available LCS classes we need to add the unique LCS classes to ship_groups and calculate the remaining quantity needed to reach users desired quantity
+            ship_groups.extend(lcs_classes)
+            remaining_qty = lcs_qty - len(lcs_classes)
+            ship_groups.extend(random.choices(lcs_classes, k=remaining_qty)) #randomly select the remaining quantity of ship classes from lcs_classes allowing for dupes and then extend ship_groups with those selections
 
-    if ddg_type != "None":
-        ship_types.append(ddg_type)
-        quantities.append(ddg_qty)
+    # DDG
+    ddg_classes = [ship_class for ship_class, data in ship_inv.items() if data["classtype"] == 'DDG']
+    if ddg_qty > 0:
+        if ddg_qty <= len(ddg_classes):
+            ship_groups.extend(random.sample(ddg_classes, ddg_qty))
+        else:
+            ship_groups.extend(ddg_classes)
+            remaining_qty = ddg_qty - len(ddg_classes)
+            ship_groups.extend(random.choices(ddg_classes, k=remaining_qty))
 
-    if cg_type != "None":
-        ship_types.append(cg_type)
-        quantities.append(cg_qty)
+    # CG
+    cg_classes = [ship_class for ship_class, data in ship_inv.items() if data["classtype"] == 'CG']
+    if cg_qty > 0:
+        if cg_qty <= len(cg_classes):
+            ship_groups.extend(random.sample(cg_classes, cg_qty))
+        else:
+            ship_groups.extend(cg_classes)
+            remaining_qty = cg_qty - len(cg_classes)
+            ship_groups.extend(random.choices(cg_classes, k=remaining_qty))
 
+    # TEST FRIGATE
+    test_classes = [ship_class for ship_class, data in ship_inv.items() if data["classtype"] == 'XX']
     if bluetest_qty > 0:
-        ship_types.extend(["Test-1"] * bluetest_qty)
-        quantities.append(bluetest_qty)
+        ship_groups.extend(['Test-1', 'Test-1'])
 
-    for ship_type, qty in zip(ship_types, quantities):
-        if qty > 0:
-            ship_data = ship_inv[ship_type]
-            ships.extend([Ship(ship_data['type'], ship_data['classtype'], ship_data['op'], ship_data['dp'], ship_data['sp'], ship_data.get('age', 1), ship_data.get('training', 0.0)) for _ in range(qty)])
+    def select_ships(ship_classes, qty):
+        if qty <= len(ship_classes):
+            return random.sample(ship_classes, qty)
+        else:
+            return ship_classes + random.choices(ship_classes, k=qty - len(ship_classes))
 
-    offensive_wpn_data = wpn_inv.get(offensive_wpn, {})
-    defensive_wpn_data = wpn_inv.get(defensive_wpn, {})
-    offensive_wpn = Missiles(offensive_wpn, **{k: v for k, v in offensive_wpn_data.items() if k != 'type'})
-    defensive_wpn = Missiles(defensive_wpn, **{k: v for k, v in defensive_wpn_data.items() if k != 'type'})
+    ships = []
+    for ship_class in ship_groups:
+        ship_data = ship_inv[ship_class]
+        ships.append(Ship(ship_data['type'], ship_data['classtype'], ship_data['op'], ship_data['dp'], ship_data['sp'], ship_data.get('age', 1), ship_data.get('training', 0.0)))
 
-    blufor_group = Group("USN", ships[0], ships[0].classtype, len(ships), scouting=scouting, offensive_missiles=offensive_wpn, defensive_missiles=defensive_wpn)
-    for ship in blufor_group.oob:
-        ship.readiness = calculate_ship_readiness(ship, scouting)
-    blufor_group.readiness = sum(ship.readiness for ship in blufor_group.oob) / len(blufor_group.oob)
+    offensive_wpn_type = get_rand_weapon(offensive_wpn)
+    defensive_wpn_type = get_rand_weapon(defensive_wpn)
+    offensive_wpn_data = {k: v for k, v in wpn_inv.get(offensive_wpn_type, {}).items() if k != 'type'}
+    defensive_wpn_data = {k: v for k, v in wpn_inv.get(defensive_wpn_type, {}).items() if k != 'type'}
+    offensive_wpn = Missiles(offensive_wpn_type, **offensive_wpn_data)
+    defensive_wpn = Missiles(defensive_wpn_type, **defensive_wpn_data)
+
+    blufor_group = Group("USN", ships[0], ships[0].classtype, len(ships), offensive_missiles=offensive_wpn, defensive_missiles=defensive_wpn)
+    blufor_group.readiness = blufor_group.calculate_average_readiness()
     blufor.append(blufor_group)
-    offensive_missile_types.extend([offensive_wpn.type] * len(ships))
-    defensive_missile_types.extend([defensive_wpn.type] * len(ships))
+    offensive_missile_types.extend([offensive_wpn_type] * len(ships))
+    defensive_missile_types.extend([defensive_wpn_type] * len(ships))
 
     #TODO_FJ - PRINT IS FOR DEBUG PURPOSES ONLY
     print("BLUFOR FLEET: \n")
     for ship in ships:
       print(ship)
-    print("Readiness: (Average)\n", blufor_group.readiness)
+    print("Survivability: (Average)\n", blufor_group.readiness)
     print("\nWeapon Inventory: (All ships)")
     print("\n Offense ", offensive_missile_types[0], "\n Defense: ", defensive_missile_types[0])
     print("\n")
     return blufor, offensive_missile_types, defensive_missile_types
 
-def generate_redfor(dest_type, dest_qty, frig_type, frig_qty, corv_type, corv_qty, redtest_qty, hostile_offensive_wpn, hostile_defensive_wpn, scouting):
+# Generate Hostile Fleet (this gets called once per run)
+def generate_redfor(dest_qty, frig_qty, corv_qty, redtest_qty, hostile_offensive_wpn, hostile_defensive_wpn):
     redfor = []
     hostile_offensive_missile_types = []
     hostile_defensive_missile_types = []
 
-    hostile_ships = []
-    hostile_ship_types = []
-    hostile_quantities = []
+    # Combine all ships into a single group
+    hostile_ship_groups = []
 
-    if dest_type != "None":
-        hostile_ship_types.append(dest_type)
-        hostile_quantities.append(dest_qty)
+    # Destroyer
+    dest_classes = [hostile_ship_class for hostile_ship_class, data in ship_inv.items() if data["classtype"] == 'Destroyer']
+    if dest_qty > 0:
+        if dest_qty <= len(dest_classes):
+            hostile_ship_groups.extend(random.sample(dest_classes, dest_qty))
+        else:
+            hostile_ship_groups.extend(dest_classes)
+            remaining_qty = dest_qty - len(dest_classes)
+            hostile_ship_groups.extend(random.choices(dest_classes, k=remaining_qty))
 
-    if frig_type != "None":
-        hostile_ship_types.append(frig_type)
-        hostile_quantities.append(frig_qty)
+    # Frigate
+    frig_classes = [hostile_ship_class for hostile_ship_class, data in ship_inv.items() if data["classtype"] == 'Frigate']
+    if frig_qty > 0:
+        if frig_qty <= len(frig_classes):
+            hostile_ship_groups.extend(random.sample(frig_classes, frig_qty))
+        else:
+            hostile_ship_groups.extend(frig_classes)
+            remaining_qty = frig_qty - len(frig_classes)
+            hostile_ship_groups.extend(random.choices(frig_classes, k=remaining_qty))
 
-    if corv_type != "None":
-        hostile_ship_types.append(corv_type)
-        hostile_quantities.append(corv_qty)
+    # Corvette
+    corv_classes = [hostile_ship_class for hostile_ship_class, data in ship_inv.items() if data["classtype"] == 'Corvette']
+    if corv_qty > 0:
+        if corv_qty <= len(corv_classes):
+            hostile_ship_groups.extend(random.sample(corv_classes, corv_qty))
+        else:
+            hostile_ship_groups.extend(corv_classes)
+            remaining_qty = corv_qty - len(corv_classes)
+            hostile_ship_groups.extend(random.choices(corv_classes, k=remaining_qty))
 
+    # TEST FRIGATE
+    redtest_classes = [hostile_ship_class for hostile_ship_class, data in ship_inv.items() if data["classtype"] == 'XX']
     if redtest_qty > 0:
-        hostile_ship_types.extend(["Test-1"] * redtest_qty)
-        hostile_quantities.append(redtest_qty)
+        hostile_ship_groups.extend(['Test-1', 'Test-1', 'Test-1'])
 
-    for hostile_ship_type, hostile_qty in zip(hostile_ship_types, hostile_quantities):
-        if hostile_qty > 0:
-            hostile_ship_data = ship_inv[hostile_ship_type]
-            hostile_ships.extend([Ship(hostile_ship_data['type'], hostile_ship_data['classtype'], hostile_ship_data['op'], hostile_ship_data['dp'], hostile_ship_data['sp'], hostile_ship_data.get('age', 1), hostile_ship_data.get('training', 0.0)) for _ in range(hostile_qty)])
 
-    hostile_offensive_wpn_data = wpn_inv.get(hostile_offensive_wpn, {})
-    hostile_defensive_wpn_data = wpn_inv.get(hostile_defensive_wpn, {})
-    hostile_offensive_wpn = Missiles(hostile_offensive_wpn, **{k: v for k, v in hostile_offensive_wpn_data.items() if k != 'type'})
-    hostile_defensive_wpn = Missiles(hostile_defensive_wpn, **{k: v for k, v in hostile_defensive_wpn_data.items() if k != 'type'})
+    hostile_ships = []
+    for hostile_ship_class in hostile_ship_groups:
+        hostile_ship_data = ship_inv[hostile_ship_class]
+        hostile_ships.append(Ship(hostile_ship_data['type'], hostile_ship_data['classtype'], hostile_ship_data['op'], hostile_ship_data['dp'], hostile_ship_data['sp'], hostile_ship_data.get('age', 1),  hostile_ship_data.get('training', 0.0)))
 
-    redfor_group = Group("PLAN", hostile_ships[0], hostile_ships[0].classtype, len(hostile_ships), scouting=scouting, offensive_missiles=hostile_offensive_wpn, defensive_missiles=hostile_defensive_wpn)
-    for ship in redfor_group.oob:
-        ship.readiness = calculate_ship_readiness(ship, scouting)
-    redfor_group.readiness = sum(ship.readiness for ship in redfor_group.oob) / len(redfor_group.oob)
+
+    hostile_offensive_wpn_type = get_rand_weapon(hostile_offensive_wpn)
+    hostile_defensive_wpn_type = get_rand_weapon(hostile_defensive_wpn)
+    hostile_offensive_wpn_data = {k: v for k, v in wpn_inv.get(hostile_offensive_wpn_type, {}).items() if k != 'type'}
+    hostile_defensive_wpn_data = {k: v for k, v in wpn_inv.get(hostile_defensive_wpn_type, {}).items() if k != 'type'}
+    hostile_offensive_wpn = Missiles(hostile_offensive_wpn_type, **hostile_offensive_wpn_data)
+    hostile_defensive_wpn = Missiles(hostile_defensive_wpn_type, **hostile_defensive_wpn_data)
+
+    redfor_group = Group("PLAN", hostile_ships[0], hostile_ships[0].classtype, len(hostile_ships), offensive_missiles=hostile_offensive_wpn, defensive_missiles=hostile_defensive_wpn)
+    redfor_group.readiness = redfor_group.calculate_average_readiness()
     redfor.append(redfor_group)
-    hostile_offensive_missile_types.extend([hostile_offensive_wpn.type] * len(hostile_ships))
-    hostile_defensive_missile_types.extend([hostile_defensive_wpn.type] * len(hostile_ships))
+    hostile_offensive_missile_types.extend([hostile_offensive_wpn_type] * len(hostile_ships))
+    hostile_defensive_missile_types.extend([hostile_defensive_wpn_type] * len(hostile_ships))
 
     #TODO_FJ - PRINT IS FOR DEBUG PURPOSES ONLY
     print("REDFOR FLEET: \n")
     for hostile_ship in hostile_ships:
       print(hostile_ship)
-    print("Readiness: (Average)\n", redfor_group.readiness)
+    print("Survivability: (Average)\n", redfor_group.readiness)
     print("\nWeapon Inventory: (All ships)")
-    print("\n Offense ", hostile_offensive_missile_types[0], "\n Defense: ", hostile_defensive_missile_types[0])
+    print("\n Offense: " , hostile_offensive_missile_types[0], "\n Defense: ", hostile_defensive_missile_types[0])
     print("\n")
     return redfor, hostile_offensive_missile_types, hostile_defensive_missile_types
 
-# Monte Carlo Simulation
+#  Monte Carlo Simulation
 num_simulations = 8  # Specify the desired number of simulations
 
 # Lists to store simulation results
@@ -453,13 +498,11 @@ friendly_wins = 0
 blu_win_costs = []
 
 for run in range(num_simulations):
-    # Generate random friendly fleet configuration with a random varied readiness level
-    blufor_readiness = random.uniform(0.0, 1.0) # Generate a random readiness value between 0 and 100%
-    blufor, offensive_missile_types, defensive_missile_types = generate_blufor(LCS, LCS_Quantity, DDG, DDG_Quantity, CG, CG_Quantity, BluTest, Friendly_Offensive_Weapon_Type, Friendly_Defensive_Weapon_Type, blufor_readiness)
+    # Generate random friendly fleet configuration
+    blufor, offensive_missile_types, defensive_missile_types = generate_blufor(LCS_Quantity, DDG_Quantity, CG_Quantity, BluTest_Quantity, Friendly_Offensive_Weapon_Type, Friendly_Defensive_Weapon_Type)
 
     # Generate random hostile fleet configuration
-    redfor_readiness = Hostile_Scouting/100
-    redfor, hostile_offensive_missile_types, hostile_defensive_missile_types = generate_redfor(Destroyer, Destroyer_Quantity, Frigate, Frigate_Quantity, Corvette, Corvette_Quantity, RedTest, Hostile_Offensive_Weapon_Type, Hostile_Defensive_Weapon_Type, redfor_readiness)
+    redfor, hostile_offensive_missile_types, hostile_defensive_missile_types = generate_redfor(Destroyer_Quantity, Frigate_Quantity, Corvette_Quantity, RedTest_Quantity, Hostile_Offensive_Weapon_Type, Hostile_Defensive_Weapon_Type)
 
     # Create a single battle instance with the random friendly fleet and the random hostile fleet
     if blufor and redfor:
@@ -491,7 +534,7 @@ for run in range(num_simulations):
 
         if battle.blu.total_status() > 0 and battle.red.total_status() == 0:
           blu_win_costs.append(total_current)
-          #print("\nBLU WIN: ", blu_win_cost)
+          print("\nBLU WIN: ", blu_win_cost)
 
         print("\n Run #", run+1, ": \n", "Ship Cost: ",run_ship_cost, "\n Weap Cost: ", run_weap_cost, "\n Run Cost: ", run_ship_cost+run_weap_cost)
 
@@ -509,7 +552,7 @@ for run in range(num_simulations):
 
     # Calculate probability of friendly positive outcome per weapon type
     weapon_outcome_probs.append((Friendly_Offensive_Weapon_Type, friendly_wins))
-"""
+
 # Confidence Intervals
 H0 = "BLUFOR wins mean cost is under budget."
 HA = "BLUFOR wins mean cost indicate battle may go over budget."
@@ -533,7 +576,7 @@ if p_value < alpha:
     print(f"\033[91mReject null hypothesis:\n {HA}\033[0m\n (p-value = {p_value:.5f})")
 else:
     print(f"Fail to reject null hypothesis:\n {H0} (p-value = {p_value:.5f})")
-"""
+
 
 # Cost to Attrition Ratio Display
 for i in range(len(total_attrition)):
